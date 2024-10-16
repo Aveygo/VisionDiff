@@ -2,7 +2,6 @@ import math
 import torch
 import torch.nn.functional as F
 from torch import nn
-from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
 
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6, elementwise_affine=True, memory_efficient=False):
@@ -26,6 +25,27 @@ class RMSNorm(nn.Module):
 
     def extra_repr(self) -> str:
         return f'dim={self.dim}, eps={self.eps}, elementwise_affine={self.elementwise_affine}'
+
+class Mlp(nn.Module):
+    def __init__(self, in_features, hidden_features=None, out_features=None):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+
+        self.fc1 = nn.Linear(in_features, hidden_features, bias=True)
+        self.fc2 = nn.Linear(hidden_features, out_features, bias=True)
+        
+        self.act =  nn.GELU(approximate="tanh")
+        self.drop1 = nn.Dropout(0)
+        self.drop2 = nn.Dropout(0)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop1(x)
+        x = self.fc2(x)
+        x = self.drop2(x)
+        return x
 
 class MultiheadDiffAttn(nn.Module):
     def __init__(self, embed_dim, depth=1, num_heads = 8, decoder_kv_attention_heads = 4, model_parallel_size = 1):
@@ -103,9 +123,9 @@ class MultiheadDiffAttn(nn.Module):
 
         attn = self.out_proj(attn)
         return attn
-    
+
 class VisionDiffAttn(nn.Module):
-    def __init__(self, dim, input_size, in_channels=None, out_channels=None, patch_size=2):
+    def __init__(self, dim, in_channels=None, out_channels=None, patch_size=2):
         super().__init__()
         self.dim = dim
 
@@ -114,44 +134,47 @@ class VisionDiffAttn(nn.Module):
         self.patch_size = patch_size
 
         if in_channels:
-            self.encode = PatchEmbed(input_size, patch_size, in_channels, dim)
+            self.encode = nn.Conv2d(in_channels, dim, kernel_size=patch_size, stride=patch_size, bias=True)
 
         if out_channels:
             self.decode = nn.Linear(dim, patch_size * patch_size * out_channels, bias=True)
 
         self.attn = MultiheadDiffAttn(dim)
-        self.mlp = Mlp(in_features=dim, hidden_features=dim * 4, act_layer=lambda: nn.GELU(approximate="tanh"), drop=0)
+        self.mlp = Mlp(in_features=dim, hidden_features=dim * 4)
 
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
 
     def unpatchify(self, x):
-        c = self.out_channels
-        p = self.patch_size
-        h = w = int(x.shape[1] ** 0.5)
-        assert h * w == x.shape[1]
-        x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
-        x = torch.einsum('nhwpqc->nchpwq', x)
-        imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
-        return imgs
-    
-    def forward(self, x):
-        if self.in_channels:
-            x = self.encode(x)
-        
-        x = x + self.attn(self.norm1(x))
-        x = x + self.mlp(self.norm1(x))
-
         if self.out_channels:
             x = self.decode(x)
-            x = self.unpatchify(x)
+            c = self.out_channels
+            p = self.patch_size
+            h = w = int(x.shape[1] ** 0.5)
+            assert h * w == x.shape[1]
+            x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
+            x = torch.einsum('nhwpqc->nchpwq', x)
+            imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
+            return imgs
+        return x
 
+    def patchify(self, x):
+        if self.in_channels:
+            x = self.encode(x)
+            return x.flatten(2).transpose(1, 2)
+        return x
+
+    def forward(self, x):
+        x = self.patchify(x)
+        x = x + self.attn(self.norm1(x))
+        x = x + self.mlp(self.norm1(x))
+        x = self.unpatchify(x)
         return x
 
 if __name__ == "__main__":
-    layer1 = VisionDiffAttn(32, 64, in_channels=3)
-    layer2 = VisionDiffAttn(32, 64)
-    layer3 = VisionDiffAttn(32, 64, out_channels=3)
+    layer1 = VisionDiffAttn(dim=32, in_channels=3)
+    layer2 = VisionDiffAttn(dim=32)
+    layer3 = VisionDiffAttn(dim=32, out_channels=3)
 
     x = torch.zeros(1, 3, 64, 64) # Example image
     x = layer1(x)
