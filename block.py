@@ -167,7 +167,7 @@ class VisionDiffAttn(nn.Module):
     def forward(self, x):
         x = self.patchify(x)
         x = x + self.attn(self.norm1(x))
-        x = x + self.mlp(self.norm1(x))
+        x = x + self.mlp(self.norm2(x))
         x = self.unpatchify(x)
         return x
 
