@@ -1,6 +1,6 @@
 # VisionDiff
 
-Using the (Differential Transformer)[https://arxiv.org/abs/2410.05258] in a vision-friendly way, similar to (VisionMamba)[https://github.com/kyegomez/VisionMamba].
+Using the [Differential Transformer](https://arxiv.org/abs/2410.05258) in a vision-friendly way, similar to [VisionMamba](https://github.com/kyegomez/VisionMamba).
 
 ```python
 from block import VisionDiffAttn
