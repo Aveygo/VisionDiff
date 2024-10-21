@@ -6,6 +6,10 @@ Using the [Differential Transformer](https://arxiv.org/abs/2410.05258) in a visi
     <img src="image.png" width="800px">
 </p>
 
+
+## Preamble
+Absolutely no formal experimentation has been performed to validate this method - take everything with a grain of salt.
+
 ## Installation
 
 ```pip install visiondiff```
