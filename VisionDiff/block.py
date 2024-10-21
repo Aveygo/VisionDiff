@@ -2,6 +2,7 @@ import math
 import torch
 import torch.nn.functional as F
 from torch import nn
+from VisionDiff.rotary import RotaryEmbedding
 
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6, elementwise_affine=True, memory_efficient=False):
@@ -48,7 +49,7 @@ class Mlp(nn.Module):
         return x
 
 class MultiheadDiffAttn(nn.Module):
-    def __init__(self, embed_dim, depth=1, num_heads = 8, decoder_kv_attention_heads = 4, model_parallel_size = 1):
+    def __init__(self, embed_dim, num_heads = 4, depth=1, decoder_kv_attention_heads = None, model_parallel_size = 1):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads // model_parallel_size
@@ -72,6 +73,9 @@ class MultiheadDiffAttn(nn.Module):
         self.subln = RMSNorm(2 * self.head_dim, eps=1e-5, elementwise_affine=False)
         self.apply(self._init_weights)
 
+        assert self.head_dim > 2, f"Attention head dim \"{embed_dim}\" divided by num heads \"{num_heads}\" cannot by ≤4!"
+        self.rotary_emb = RotaryEmbedding(dim = self.head_dim, use_xpos=True)
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             nn.init.constant_(m.weight, 0)
@@ -88,7 +92,7 @@ class MultiheadDiffAttn(nn.Module):
             .expand(bs, n_kv_heads, n_rep, slen, head_dim)
             .reshape(bs, n_kv_heads * n_rep, slen, head_dim)
         )
-
+    
     def forward(self, x):
         bsz, tgt_len, embed_dim = x.size()
         src_len = tgt_len
@@ -100,6 +104,8 @@ class MultiheadDiffAttn(nn.Module):
         q = q.view(bsz, tgt_len, 2 * self.num_heads, self.head_dim)
         k = k.view(bsz, src_len, 2 * self.num_kv_heads, self.head_dim)
         v = v.view(bsz, src_len, self.num_kv_heads, 2 * self.head_dim)
+
+        q, k = self.rotary_emb.rotate_queries_and_keys(q, k)
 
         q = q.transpose(1, 2)
         k = self.repeat_kv(k.transpose(1, 2), self.n_rep)
@@ -124,8 +130,8 @@ class MultiheadDiffAttn(nn.Module):
         attn = self.out_proj(attn)
         return attn
 
-class VisionDiffAttn(nn.Module):
-    def __init__(self, dim, in_channels=None, out_channels=None, patch_size=2):
+class VisionDiff(nn.Module):
+    def __init__(self, dim, num_heads=4, in_channels=None, out_channels=None, patch_size=2):
         super().__init__()
         self.dim = dim
 
@@ -139,7 +145,7 @@ class VisionDiffAttn(nn.Module):
         if out_channels:
             self.decode = nn.Linear(dim, patch_size * patch_size * out_channels, bias=True)
 
-        self.attn = MultiheadDiffAttn(dim)
+        self.attn = MultiheadDiffAttn(dim, num_heads=num_heads)
         self.mlp = Mlp(in_features=dim, hidden_features=dim * 4)
 
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
@@ -172,13 +178,14 @@ class VisionDiffAttn(nn.Module):
         return x
 
 if __name__ == "__main__":
-    layer1 = VisionDiffAttn(dim=32, in_channels=3)
-    layer2 = VisionDiffAttn(dim=32)
-    layer3 = VisionDiffAttn(dim=32, out_channels=3)
+    dim, num_heads = 32, 4
+    layer1 = VisionDiff(dim, num_heads, in_channels=3)
+    layer2 = VisionDiff(dim, num_heads)
+    layer3 = VisionDiff(dim, num_heads, out_channels=3)
 
-    x = torch.zeros(1, 3, 64, 64) # Example image
+    x = torch.zeros(1, 3, 64, 64) # Example "image"
     x = layer1(x)
     x = layer2(x)
     x = layer3(x)
 
-    print(f"Output shape: {x.shape}")
+    print(f"Output shape: {x.shape}") # [1, 3, 64, 64]
